@@ -23,11 +23,21 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	vmschema "kubevirt.io/api/core/v1"
+	libvirtxml "libvirt.org/go/libvirtxml"
 
 	"kubevirt.io/vhostuser-network-binding-plugin/pkg/domain"
-
-	domainschema "kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/api"
+	"kubevirt.io/vhostuser-network-binding-plugin/pkg/utils"
 )
+
+// pciAddr is a helper to build a DomainAddressPCI from four uint values.
+func pciAddr(dom, bus, slot, fn uint) *libvirtxml.DomainAddressPCI {
+	return &libvirtxml.DomainAddressPCI{
+		Domain:   &dom,
+		Bus:      &bus,
+		Slot:     &slot,
+		Function: &fn,
+	}
+}
 
 var _ = Describe("vhostuser network configurator", func() {
 	Context("generate domain spec interface", func() {
@@ -59,58 +69,54 @@ var _ = Describe("vhostuser network configurator", func() {
 			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
 			Expect(err).ToNot(HaveOccurred())
 
-			_, err = testMutator.Mutate(&domainschema.DomainSpec{})
+			_, err = testMutator.Mutate(&libvirtxml.Domain{})
 			Expect(err).To(HaveOccurred())
 		})
 
 		DescribeTable("should add interface to domain spec given iface with",
-			func(iface *vmschema.Interface, expectedDomainIface *domainschema.Interface) {
+			func(iface *vmschema.Interface, expectedDomainIface *libvirtxml.DomainInterface) {
 				ifaces := []vmschema.Interface{*iface}
 				networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
 
 				testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
 				Expect(err).ToNot(HaveOccurred())
 
-				mutatedDomSpec, err := testMutator.Mutate(&domainschema.DomainSpec{})
+				mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
 				Expect(err).ToNot(HaveOccurred())
-				Expect(mutatedDomSpec.Devices.Interfaces).To(Equal([]domainschema.Interface{*expectedDomainIface}))
+				Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{*expectedDomainIface}))
 			},
 			Entry("vhostuser binding plugin",
 				&vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}},
-				&domainschema.Interface{
-					Alias: domainschema.NewUserDefinedAlias("default"),
-					Type:  "vhostuser",
-					Model: &domainschema.Model{Type: "virtio"},
+				&libvirtxml.DomainInterface{
+					Alias: utils.NewUserDefinedAlias("default"),
+					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 				},
 			),
 			Entry("PCI address",
 				&vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"},
 					PciAddress: "0000:02:02.0"},
-				&domainschema.Interface{
-					Alias:   domainschema.NewUserDefinedAlias("default"),
-					Type:    "vhostuser",
-					Model:   &domainschema.Model{Type: "virtio"},
-					Address: &domainschema.Address{Type: "pci", Domain: "0x0000", Bus: "0x02", Slot: "0x02", Function: "0x0"},
+				&libvirtxml.DomainInterface{
+					Alias:   utils.NewUserDefinedAlias("default"),
+					Model:   &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Address: &libvirtxml.DomainAddress{PCI: pciAddr(0, 2, 2, 0)},
 				},
 			),
 			Entry("MAC address",
 				&vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"},
 					MacAddress: "02:02:02:02:02:02"},
-				&domainschema.Interface{
-					Alias: domainschema.NewUserDefinedAlias("default"),
-					Type:  "vhostuser",
-					Model: &domainschema.Model{Type: "virtio"},
-					MAC:   &domainschema.MAC{MAC: "02:02:02:02:02:02"},
+				&libvirtxml.DomainInterface{
+					Alias: utils.NewUserDefinedAlias("default"),
+					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					MAC:   &libvirtxml.DomainInterfaceMAC{Address: "02:02:02:02:02:02"},
 				},
 			),
 			Entry("ACPI address",
 				&vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"},
 					ACPIIndex: 2},
-				&domainschema.Interface{
-					Alias: domainschema.NewUserDefinedAlias("default"),
-					Type:  "vhostuser",
-					Model: &domainschema.Model{Type: "virtio"},
-					ACPI:  &domainschema.ACPI{Index: uint(2)},
+				&libvirtxml.DomainInterface{
+					Alias: utils.NewUserDefinedAlias("default"),
+					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					ACPI:  &libvirtxml.DomainDeviceACPI{Index: uint(2)},
 				},
 			),
 		)
@@ -125,45 +131,47 @@ var _ = Describe("vhostuser network configurator", func() {
 				{Name: "secondary", InterfaceBindingMethod: vmschema.InterfaceBindingMethod{Bridge: &vmschema.InterfaceBridge{}}},
 			}
 
-			expectedDomainIface := &domainschema.Interface{
-				Alias: domainschema.NewUserDefinedAlias("default"),
-				Type:  "vhostuser",
-				Model: &domainschema.Model{Type: "virtio"},
+			expectedDomainIface := &libvirtxml.DomainInterface{
+				Alias: utils.NewUserDefinedAlias("default"),
+				Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 			}
 
 			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
 			Expect(err).ToNot(HaveOccurred())
 
-			existingIface := &domainschema.Interface{Alias: domainschema.NewUserDefinedAlias("existing-iface")}
-			testDomSpec := &domainschema.DomainSpec{
-				Devices: domainschema.Devices{
-					Interfaces: []domainschema.Interface{*existingIface}}}
+			existingIface := libvirtxml.DomainInterface{Alias: utils.NewUserDefinedAlias("existing-iface")}
+			testDomain := &libvirtxml.Domain{
+				Devices: &libvirtxml.DomainDeviceList{
+					Interfaces: []libvirtxml.DomainInterface{existingIface},
+				},
+			}
 
-			mutatedDomSpec, err := testMutator.Mutate(testDomSpec)
+			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomSpec.Devices.Interfaces).To(Equal([]domainschema.Interface{*existingIface, *expectedDomainIface}))
+			Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{existingIface, *expectedDomainIface}))
 		})
 
 		It("should set domain interface correctly when executed more than once", func() {
 			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
 			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
 
-			expectedDomainIface := &domainschema.Interface{
-				Alias: domainschema.NewUserDefinedAlias("default"),
-				Type:  "vhostuser",
-				Model: &domainschema.Model{Type: "virtio"},
+			expectedDomainIface := &libvirtxml.DomainInterface{
+				Alias: utils.NewUserDefinedAlias("default"),
+				Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 			}
 
 			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
 			Expect(err).ToNot(HaveOccurred())
 
-			testDomSpec := &domainschema.DomainSpec{}
+			testDomain := &libvirtxml.Domain{}
 
-			mutatedDomSpec, err := testMutator.Mutate(testDomSpec)
+			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomSpec.Devices.Interfaces).To(Equal([]domainschema.Interface{*expectedDomainIface}))
+			Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{*expectedDomainIface}))
 
-			Expect(testMutator.Mutate(mutatedDomSpec)).To(Equal(mutatedDomSpec))
+			mutatedAgain, err := testMutator.Mutate(mutatedDomain)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedAgain).To(Equal(mutatedDomain))
 		})
 
 		It("should handle multiple vhostuser interfaces correctly", func() {
@@ -178,34 +186,31 @@ var _ = Describe("vhostuser network configurator", func() {
 				{Name: "net2", Binding: &vmschema.PluginBinding{Name: "vhostuser"}, MacAddress: "02:00:00:00:00:02", PciAddress: "0000:03:00.0"},
 			}
 
-			expectedDomainIfaces := []domainschema.Interface{
+			expectedDomainIfaces := []libvirtxml.DomainInterface{
 				{
-					Alias: domainschema.NewUserDefinedAlias("default"),
-					Type:  "vhostuser",
-					Model: &domainschema.Model{Type: "virtio"},
+					Alias: utils.NewUserDefinedAlias("default"),
+					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 				},
 				{
-					Alias: domainschema.NewUserDefinedAlias("net1"),
-					Type:  "vhostuser",
-					Model: &domainschema.Model{Type: "virtio"},
-					MAC:   &domainschema.MAC{MAC: "02:00:00:00:00:01"},
+					Alias: utils.NewUserDefinedAlias("net1"),
+					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					MAC:   &libvirtxml.DomainInterfaceMAC{Address: "02:00:00:00:00:01"},
 				},
 				{
-					Alias:   domainschema.NewUserDefinedAlias("net2"),
-					Type:    "vhostuser",
-					Model:   &domainschema.Model{Type: "virtio"},
-					MAC:     &domainschema.MAC{MAC: "02:00:00:00:00:02"},
-					Address: &domainschema.Address{Type: "pci", Domain: "0x0000", Bus: "0x03", Slot: "0x00", Function: "0x0"},
+					Alias:   utils.NewUserDefinedAlias("net2"),
+					Model:   &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					MAC:     &libvirtxml.DomainInterfaceMAC{Address: "02:00:00:00:00:02"},
+					Address: &libvirtxml.DomainAddress{PCI: pciAddr(0, 3, 0, 0)},
 				},
 			}
 
 			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
 			Expect(err).ToNot(HaveOccurred())
 
-			mutatedDomSpec, err := testMutator.Mutate(&domainschema.DomainSpec{})
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomSpec.Devices.Interfaces).To(HaveLen(3))
-			Expect(mutatedDomSpec.Devices.Interfaces).To(Equal(expectedDomainIfaces))
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(3))
+			Expect(mutatedDomain.Devices.Interfaces).To(Equal(expectedDomainIfaces))
 		})
 
 		It("should replace existing interface with same name", func() {
@@ -215,26 +220,27 @@ var _ = Describe("vhostuser network configurator", func() {
 			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
 			Expect(err).ToNot(HaveOccurred())
 
-			existingIface := &domainschema.Interface{
-				Alias: domainschema.NewUserDefinedAlias("default"),
-				Type:  "bridge",
+			existingIface := libvirtxml.DomainInterface{
+				Alias: utils.NewUserDefinedAlias("default"),
+				Source: &libvirtxml.DomainInterfaceSource{
+					Bridge: &libvirtxml.DomainInterfaceSourceBridge{Bridge: "br0"},
+				},
 			}
-			testDomSpec := &domainschema.DomainSpec{
-				Devices: domainschema.Devices{
-					Interfaces: []domainschema.Interface{*existingIface},
+			testDomain := &libvirtxml.Domain{
+				Devices: &libvirtxml.DomainDeviceList{
+					Interfaces: []libvirtxml.DomainInterface{existingIface},
 				},
 			}
 
-			expectedDomainIface := &domainschema.Interface{
-				Alias: domainschema.NewUserDefinedAlias("default"),
-				Type:  "vhostuser",
-				Model: &domainschema.Model{Type: "virtio"},
+			expectedDomainIface := &libvirtxml.DomainInterface{
+				Alias: utils.NewUserDefinedAlias("default"),
+				Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 			}
 
-			mutatedDomSpec, err := testMutator.Mutate(testDomSpec)
+			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomSpec.Devices.Interfaces).To(HaveLen(1))
-			Expect(mutatedDomSpec.Devices.Interfaces[0]).To(Equal(*expectedDomainIface))
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(1))
+			Expect(mutatedDomain.Devices.Interfaces[0]).To(Equal(*expectedDomainIface))
 		})
 
 		It("should handle mixed vhostuser and non-vhostuser interfaces", func() {
@@ -252,29 +258,33 @@ var _ = Describe("vhostuser network configurator", func() {
 			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
 			Expect(err).ToNot(HaveOccurred())
 
-			existingBridgeIface := &domainschema.Interface{
-				Alias: domainschema.NewUserDefinedAlias("multus1"),
-				Type:  "bridge",
+			existingBridgeIface := libvirtxml.DomainInterface{
+				Alias: utils.NewUserDefinedAlias("multus1"),
+				Source: &libvirtxml.DomainInterfaceSource{
+					Bridge: &libvirtxml.DomainInterfaceSourceBridge{Bridge: "br0"},
+				},
 			}
-			testDomSpec := &domainschema.DomainSpec{
-				Devices: domainschema.Devices{
-					Interfaces: []domainschema.Interface{*existingBridgeIface},
+			testDomain := &libvirtxml.Domain{
+				Devices: &libvirtxml.DomainDeviceList{
+					Interfaces: []libvirtxml.DomainInterface{existingBridgeIface},
 				},
 			}
 
-			mutatedDomSpec, err := testMutator.Mutate(testDomSpec)
+			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomSpec.Devices.Interfaces).To(HaveLen(3))
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(3))
 
 			// Bridge interface should remain untouched
-			Expect(mutatedDomSpec.Devices.Interfaces[0].Type).To(Equal("bridge"))
-			Expect(mutatedDomSpec.Devices.Interfaces[0].Alias.GetName()).To(Equal("multus1"))
+			Expect(mutatedDomain.Devices.Interfaces[0].Source.Bridge).ToNot(BeNil())
+			Expect(utils.AliasName(mutatedDomain.Devices.Interfaces[0].Alias)).To(Equal("multus1"))
 
-			// Vhostuser interfaces should be added
+			// Vhostuser interfaces should be added (no Source set yet)
 			vhostuserIfaces := 0
-			for _, iface := range mutatedDomSpec.Devices.Interfaces {
-				if iface.Type == "vhostuser" {
-					vhostuserIfaces++
+			for _, iface := range mutatedDomain.Devices.Interfaces {
+				if iface.Source == nil || iface.Source.VHostUser == nil {
+					if iface.Model != nil && iface.Model.Type == "virtio" {
+						vhostuserIfaces++
+					}
 				}
 			}
 			Expect(vhostuserIfaces).To(Equal(2))
