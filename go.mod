@@ -9,6 +9,7 @@ require (
 	kubevirt.io/api v1.8.2
 	kubevirt.io/client-go v1.8.2
 	kubevirt.io/kubevirt v1.8.2
+	libvirt.org/go/libvirtxml v1.12002.0
 )
 
 require (

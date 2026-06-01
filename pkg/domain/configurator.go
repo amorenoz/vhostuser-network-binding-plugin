@@ -23,12 +23,9 @@ import (
 	"fmt"
 
 	vmschema "kubevirt.io/api/core/v1"
+	libvirtxml "libvirt.org/go/libvirtxml"
 
-	domainschema "kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/api"
-
-	"kubevirt.io/client-go/log"
-
-	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/device"
+	"kubevirt.io/vhostuser-network-binding-plugin/pkg/utils"
 )
 
 type VhostUserNetworkConfigurator struct {
@@ -38,9 +35,6 @@ type VhostUserNetworkConfigurator struct {
 const (
 	// VhostUserPluginName vhost-user binding plugin name should be registered to Kubevirt through Kubevirt CR
 	VhostUserPluginName = "vhostuser"
-	// VhostUserLogFilePath path where vhost user sockets will be placed
-	// HACK! we should really find a way to get a host mount properly specified
-	VhostUserSockPath = "/var/lib/vhost_sockets"
 )
 
 func NewVhostUserNetworkConfigurator(ifaces []vmschema.Interface, networks []vmschema.Network) (*VhostUserNetworkConfigurator, error) {
@@ -61,66 +55,58 @@ func NewVhostUserNetworkConfigurator(ifaces []vmschema.Interface, networks []vms
 	}, nil
 }
 
-func (p VhostUserNetworkConfigurator) Mutate(domainSpec *domainschema.DomainSpec) (*domainschema.DomainSpec, error) {
-	domainSpecCopy := domainSpec.DeepCopy()
+func (p VhostUserNetworkConfigurator) Mutate(domain *libvirtxml.Domain) (*libvirtxml.Domain, error) {
+	if domain.Devices == nil {
+		domain.Devices = &libvirtxml.DomainDeviceList{}
+	}
 
 	for _, vhostIface := range p.vhostIfaces {
-		log.Log.Infof("%s: generating domain interface definition for", vhostIface.Name)
 		generatedIface, err := p.generateDomainInterface(vhostIface)
 		if err != nil {
 			return nil, fmt.Errorf("%s: failed to generate domain interface spec for iface: %v", vhostIface.Name, err)
 		}
-		log.Log.Infof("%s: generated domain interface definition: %+v", vhostIface.Name, generatedIface)
 
-		if iface := lookupIfaceByAliasName(domainSpecCopy.Devices.Interfaces, vhostIface.Name); iface != nil {
+		if iface := lookupIfaceByAliasName(domain.Devices.Interfaces, vhostIface.Name); iface != nil {
 			*iface = *generatedIface
 		} else {
-			domainSpecCopy.Devices.Interfaces = append(domainSpecCopy.Devices.Interfaces, *generatedIface)
+			domain.Devices.Interfaces = append(domain.Devices.Interfaces, *generatedIface)
 		}
 	}
 
-	return domainSpecCopy, nil
+	return domain, nil
 }
 
-func (p VhostUserNetworkConfigurator) generateDomainInterface(iface *vmschema.Interface) (*domainschema.Interface, error) {
-	var pciAddress *domainschema.Address
+func (p VhostUserNetworkConfigurator) generateDomainInterface(iface *vmschema.Interface) (*libvirtxml.DomainInterface, error) {
+	domIface := &libvirtxml.DomainInterface{
+		Alias: utils.NewUserDefinedAlias(iface.Name),
+		Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+		// TODO: Add vhostuser source
+	}
+
 	if iface.PciAddress != "" {
-		var err error
-		pciAddress, err = device.NewPciAddressField(iface.PciAddress)
+		pciAddr, err := utils.NewPCIAddress(iface.PciAddress)
 		if err != nil {
 			return nil, err
 		}
+		domIface.Address = &libvirtxml.DomainAddress{PCI: pciAddr}
 	}
-	ifaceModelType := "virtio"
-	model := &domainschema.Model{Type: ifaceModelType}
 
-	var mac *domainschema.MAC
 	if iface.MacAddress != "" {
-		mac = &domainschema.MAC{MAC: iface.MacAddress}
+		domIface.MAC = &libvirtxml.DomainInterfaceMAC{Address: iface.MacAddress}
 	}
 
-	var acpi *domainschema.ACPI
 	if iface.ACPIIndex > 0 {
-		acpi = &domainschema.ACPI{Index: uint(iface.ACPIIndex)}
+		domIface.ACPI = &libvirtxml.DomainDeviceACPI{Index: uint(iface.ACPIIndex)}
 	}
 
-	return &domainschema.Interface{
-		Alias:   domainschema.NewUserDefinedAlias(iface.Name),
-		Model:   model,
-		Address: pciAddress,
-		MAC:     mac,
-		ACPI:    acpi,
-		Type:    "vhostuser",
-		// TODO: Add source
-	}, nil
+	return domIface, nil
 }
 
-func lookupIfaceByAliasName(ifaces []domainschema.Interface, name string) *domainschema.Interface {
+func lookupIfaceByAliasName(ifaces []libvirtxml.DomainInterface, name string) *libvirtxml.DomainInterface {
 	for i, iface := range ifaces {
-		if iface.Alias != nil && iface.Alias.GetName() == name {
+		if utils.AliasName(iface.Alias) == name {
 			return &ifaces[i]
 		}
 	}
-
 	return nil
 }

@@ -22,9 +22,11 @@ package callback_test
 import (
 	"testing"
 
-	"kubevirt.io/client-go/testutils"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func TestCallback(t *testing.T) {
-	testutils.KubeVirtTestSuiteSetup(t)
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Callback Suite")
 }
