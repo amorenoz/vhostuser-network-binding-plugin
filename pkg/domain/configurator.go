@@ -73,6 +73,8 @@ func (p VhostUserNetworkConfigurator) Mutate(domain *libvirtxml.Domain) (*libvir
 		}
 	}
 
+	utils.EnsureSharedMemoryBacking(domain)
+
 	return domain, nil
 }
 
