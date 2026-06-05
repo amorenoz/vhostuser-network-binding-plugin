@@ -289,5 +289,57 @@ var _ = Describe("vhostuser network configurator", func() {
 			}
 			Expect(vhostuserIfaces).To(Equal(2))
 		})
+
+		It("should set memory backing to shared", func() {
+			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
+			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.MemoryBacking).ToNot(BeNil())
+			Expect(mutatedDomain.MemoryBacking.MemoryAccess).ToNot(BeNil())
+			Expect(mutatedDomain.MemoryBacking.MemoryAccess.Mode).To(Equal("shared"))
+		})
+
+		It("should set memory backing to shared even if it exists with a different mode", func() {
+			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
+			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			Expect(err).ToNot(HaveOccurred())
+
+			testDomain := &libvirtxml.Domain{
+				MemoryBacking: &libvirtxml.DomainMemoryBacking{
+					MemoryAccess: &libvirtxml.DomainMemoryAccess{Mode: "private"},
+				},
+			}
+
+			mutatedDomain, err := testMutator.Mutate(testDomain)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.MemoryBacking).ToNot(BeNil())
+			Expect(mutatedDomain.MemoryBacking.MemoryAccess).ToNot(BeNil())
+			Expect(mutatedDomain.MemoryBacking.MemoryAccess.Mode).To(Equal("shared"))
+		})
+
+		It("should set memory backing access when backing exists but access is nil", func() {
+			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
+			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			Expect(err).ToNot(HaveOccurred())
+
+			testDomain := &libvirtxml.Domain{
+				MemoryBacking: &libvirtxml.DomainMemoryBacking{},
+			}
+
+			mutatedDomain, err := testMutator.Mutate(testDomain)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.MemoryBacking).ToNot(BeNil())
+			Expect(mutatedDomain.MemoryBacking.MemoryAccess).ToNot(BeNil())
+			Expect(mutatedDomain.MemoryBacking.MemoryAccess.Mode).To(Equal("shared"))
+		})
 	})
 })
