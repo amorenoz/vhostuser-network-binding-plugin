@@ -32,12 +32,16 @@ import (
 
 	"kubevirt.io/client-go/log"
 
+	draMetadata "kubevirt.io/vhostuser-network-binding-plugin/pkg/dra/metadata"
+	"kubevirt.io/vhostuser-network-binding-plugin/pkg/dra/ovsdpdk"
 	srv "kubevirt.io/vhostuser-network-binding-plugin/pkg/server"
 )
 
 const hookSocket = "vhostuser.sock"
 
 func main() {
+	draDriver := ovsdpdk.NewOvsDpdkDriver(draMetadata.DRAMetadata{})
+
 	socketPath := filepath.Join(hooks.HookSocketsSharedDirectory, hookSocket)
 	socket, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -55,7 +59,7 @@ func main() {
 	hooksInfo.RegisterInfoServer(server, srv.InfoServer{Version: "v1alpha3"})
 
 	shutdownChan := make(chan struct{})
-	hooksV1alpha3.RegisterCallbacksServer(server, srv.V1alpha3Server{Done: shutdownChan})
+	hooksV1alpha3.RegisterCallbacksServer(server, srv.NewV1alpha3Server(draDriver, shutdownChan))
 
 	log.Log.Infof("Starting hook server exposing 'info' and '%s' services on socket %q", "v1alpha3", socketPath)
 	srv.Serve(server, socket, shutdownChan)
