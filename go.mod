@@ -5,7 +5,10 @@ go 1.26.3
 require (
 	github.com/onsi/ginkgo/v2 v2.29.0
 	github.com/onsi/gomega v1.41.0
-	google.golang.org/grpc v1.72.1
+	google.golang.org/grpc v1.81.1
+	k8s.io/api v0.36.1
+	k8s.io/dynamic-resource-allocation v0.36.1
+	k8s.io/klog/v2 v2.140.0
 	kubevirt.io/api v1.8.2
 	kubevirt.io/client-go v1.8.2
 	kubevirt.io/kubevirt v1.8.2
@@ -38,18 +41,29 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250303144028-a0af3efb3deb // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	k8s.io/api v0.34.3 // indirect
 	k8s.io/apiextensions-apiserver v0.34.3 // indirect
-	k8s.io/apimachinery v0.34.3 // indirect
-	k8s.io/klog/v2 v2.130.1 // indirect
-	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
+	k8s.io/apimachinery v0.36.1 // indirect
+	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
 	kubevirt.io/containerized-data-importer-api v1.64.0 // indirect
 	kubevirt.io/controller-lifecycle-operator-sdk/api v0.2.4 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
-	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
+	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
+)
+
+// k8s.io/dynamic-resource-allocation v0.36.1 is required for the DRA downward
+// API metadata packages and depends on k8s/apimachinery v0.36.1. Kubevirt pins
+// k8s.io/apimachinery to v0.34.x so adding the DRA apis breaks the dependency tree.
+//
+// The replace directives below pin the k8s.io/* modules back to v0.34.3.
+// Luckily, the DRA v0.36.1 metadata packages compile cleanly against k8s.io/apimachinery
+// v0.34.3.
+replace (
+	k8s.io/api => k8s.io/api v0.34.3
+	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.34.3
+	k8s.io/apimachinery => k8s.io/apimachinery v0.34.3
 )
