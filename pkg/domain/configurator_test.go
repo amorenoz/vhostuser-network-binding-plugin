@@ -20,14 +20,91 @@
 package domain_test
 
 import (
+	"fmt"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	vmschema "kubevirt.io/api/core/v1"
 	libvirtxml "libvirt.org/go/libvirtxml"
 
 	"kubevirt.io/vhostuser-network-binding-plugin/pkg/domain"
+	"kubevirt.io/vhostuser-network-binding-plugin/pkg/dra/driver"
 	"kubevirt.io/vhostuser-network-binding-plugin/pkg/utils"
 )
+
+// mockDRADriver implements driver.DRADriver for testing.
+type mockDRADriver struct {
+	// metadata maps claimName to VhostMetadata.
+	metadata map[string]driver.VhostMetadata
+	err      error
+}
+
+func (m mockDRADriver) GetVhostMetadata(claimName, _ string) (driver.VhostMetadata, error) {
+	if m.err != nil {
+		return driver.VhostMetadata{}, m.err
+	}
+	meta, ok := m.metadata[claimName]
+	if !ok {
+		return driver.VhostMetadata{}, fmt.Errorf("no metadata for claim %q", claimName)
+	}
+	return meta, nil
+}
+
+// vhostIface returns a vhostuser-bound Interface with the given name and optional mutators.
+func vhostIface(name string) vmschema.Interface {
+	return vmschema.Interface{Name: name, Binding: &vmschema.PluginBinding{Name: "vhostuser"}}
+}
+
+// draNetwork returns a Network with a ResourceClaim source.
+func draNetwork(ifaceName, claimName, requestName string) vmschema.Network {
+	return vmschema.Network{
+		Name: ifaceName,
+		NetworkSource: vmschema.NetworkSource{
+			ResourceClaim: &vmschema.ClaimRequest{
+				ClaimName:   claimName,
+				RequestName: requestName,
+			},
+		},
+	}
+}
+
+// buildVMI constructs a minimal VMI from the given interfaces and networks.
+func buildVMI(ifaces []vmschema.Interface, networks []vmschema.Network) *vmschema.VirtualMachineInstance {
+	return &vmschema.VirtualMachineInstance{
+		Spec: vmschema.VirtualMachineInstanceSpec{
+			Domain: vmschema.DomainSpec{
+				Devices: vmschema.Devices{
+					Interfaces: ifaces,
+				},
+			},
+			Networks: networks,
+		},
+	}
+}
+
+// defaultDriver returns a mockDRADriver that maps each claim name to a socket
+// path of the form /var/run/vhost/<claimName>.sock.
+func defaultDriver(claimNames ...string) mockDRADriver {
+	metadata := make(map[string]driver.VhostMetadata, len(claimNames))
+	for _, name := range claimNames {
+		metadata[name] = driver.VhostMetadata{VhostPath: fmt.Sprintf("/var/run/vhost/%s.sock", name)}
+	}
+	return mockDRADriver{metadata: metadata}
+}
+
+// vhostSource builds the expected libvirtxml vhost-user source for a given socket path.
+func vhostSource(path string) *libvirtxml.DomainInterfaceSource {
+	return &libvirtxml.DomainInterfaceSource{
+		VHostUser: &libvirtxml.DomainInterfaceSourceVHostUser{
+			Chardev: &libvirtxml.DomainChardevSource{
+				UNIX: &libvirtxml.DomainChardevSourceUNIX{
+					Path: path,
+					Mode: "server",
+				},
+			},
+		},
+	}
+}
 
 // pciAddr is a helper to build a DomainAddressPCI from four uint values.
 func pciAddr(dom, bus, slot, fn uint) *libvirtxml.DomainAddressPCI {
@@ -40,103 +117,133 @@ func pciAddr(dom, bus, slot, fn uint) *libvirtxml.DomainAddressPCI {
 }
 
 var _ = Describe("vhostuser network configurator", func() {
-	Context("generate domain spec interface", func() {
-		DescribeTable("should fail to create configurator given",
-			func(ifaces []vmschema.Interface, networks []vmschema.Network) {
-				_, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
-
+	Context("constructor", func() {
+		DescribeTable("should fail given",
+			func(ifaces []vmschema.Interface, networks []vmschema.Network, drv driver.DRADriver) {
+				vmi := buildVMI(ifaces, networks)
+				_, err := domain.NewVhostUserNetworkConfigurator(vmi, drv)
 				Expect(err).To(HaveOccurred())
 			},
 			Entry("no interfaces",
 				nil,
-				[]vmschema.Network{{Name: "default", NetworkSource: vmschema.NetworkSource{Multus: &vmschema.MultusNetwork{}}}},
+				[]vmschema.Network{draNetwork("default", "default", "vhost-port")},
+				defaultDriver("default"),
 			),
 			Entry("interface with no vhostuser binding method",
 				[]vmschema.Interface{{Name: "default", InterfaceBindingMethod: vmschema.InterfaceBindingMethod{Bridge: &vmschema.InterfaceBridge{}}}},
-				[]vmschema.Network{*vmschema.DefaultPodNetwork()},
+				[]vmschema.Network{draNetwork("default", "default", "vhost-port")},
+				defaultDriver("default"),
 			),
 			Entry("interface with no vhostuser binding plugin",
 				[]vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "no-vhostuser"}}},
-				[]vmschema.Network{*vmschema.DefaultPodNetwork()},
+				[]vmschema.Network{draNetwork("default", "default", "vhost-port")},
+				defaultDriver("default"),
+			),
+			Entry("vhostuser interface with no matching network",
+				[]vmschema.Interface{vhostIface("default")},
+				nil,
+				defaultDriver("default"),
+			),
+			Entry("DRA driver returns an error",
+				[]vmschema.Interface{vhostIface("default")},
+				[]vmschema.Network{draNetwork("default", "default", "vhost-port")},
+				mockDRADriver{err: fmt.Errorf("driver failure")},
 			),
 		)
 
 		It("should fail given interface with invalid PCI address", func() {
-			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"},
-				PciAddress: "invalid-pci-address"}}
-			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
+			ifaces := []vmschema.Interface{{
+				Name:       "default",
+				Binding:    &vmschema.PluginBinding{Name: "vhostuser"},
+				PciAddress: "invalid-pci-address",
+			}}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			vmi := buildVMI(ifaces, networks)
 
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
 			Expect(err).ToNot(HaveOccurred())
 
 			_, err = testMutator.Mutate(&libvirtxml.Domain{})
 			Expect(err).To(HaveOccurred())
 		})
+	})
 
+	Context("generate domain spec interface", func() {
 		DescribeTable("should add interface to domain spec given iface with",
-			func(iface *vmschema.Interface, expectedDomainIface *libvirtxml.DomainInterface) {
-				ifaces := []vmschema.Interface{*iface}
-				networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
+			func(iface vmschema.Interface, expectedDomainIface libvirtxml.DomainInterface) {
+				ifaces := []vmschema.Interface{iface}
+				networks := []vmschema.Network{draNetwork(iface.Name, iface.Name, "vhost-port")}
+				vmi := buildVMI(ifaces, networks)
 
-				testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+				testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver(iface.Name))
 				Expect(err).ToNot(HaveOccurred())
 
 				mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
 				Expect(err).ToNot(HaveOccurred())
-				Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{*expectedDomainIface}))
+				Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{expectedDomainIface}))
 			},
 			Entry("vhostuser binding plugin",
-				&vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}},
-				&libvirtxml.DomainInterface{
-					Alias: utils.NewUserDefinedAlias("default"),
-					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+				vhostIface("default"),
+				libvirtxml.DomainInterface{
+					Alias:  utils.NewUserDefinedAlias("default"),
+					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Source: vhostSource("/var/run/vhost/default.sock"),
 				},
 			),
 			Entry("PCI address",
-				&vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"},
-					PciAddress: "0000:02:02.0"},
-				&libvirtxml.DomainInterface{
+				vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}, PciAddress: "0000:02:02.0"},
+				libvirtxml.DomainInterface{
 					Alias:   utils.NewUserDefinedAlias("default"),
 					Model:   &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Source:  vhostSource("/var/run/vhost/default.sock"),
 					Address: &libvirtxml.DomainAddress{PCI: pciAddr(0, 2, 2, 0)},
 				},
 			),
 			Entry("MAC address",
-				&vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"},
-					MacAddress: "02:02:02:02:02:02"},
-				&libvirtxml.DomainInterface{
-					Alias: utils.NewUserDefinedAlias("default"),
-					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
-					MAC:   &libvirtxml.DomainInterfaceMAC{Address: "02:02:02:02:02:02"},
+				vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}, MacAddress: "02:02:02:02:02:02"},
+				libvirtxml.DomainInterface{
+					Alias:  utils.NewUserDefinedAlias("default"),
+					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Source: vhostSource("/var/run/vhost/default.sock"),
+					MAC:    &libvirtxml.DomainInterfaceMAC{Address: "02:02:02:02:02:02"},
 				},
 			),
 			Entry("ACPI address",
-				&vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"},
-					ACPIIndex: 2},
-				&libvirtxml.DomainInterface{
-					Alias: utils.NewUserDefinedAlias("default"),
-					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
-					ACPI:  &libvirtxml.DomainDeviceACPI{Index: uint(2)},
+				vmschema.Interface{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}, ACPIIndex: 2},
+				libvirtxml.DomainInterface{
+					Alias:  utils.NewUserDefinedAlias("default"),
+					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Source: vhostSource("/var/run/vhost/default.sock"),
+					ACPI:   &libvirtxml.DomainDeviceACPI{Index: uint(2)},
 				},
 			),
 		)
 
+		It("should set vhost-user source mode to server", func() {
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			vmi := buildVMI(ifaces, networks)
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces[0].Source.VHostUser.Chardev.UNIX.Mode).To(Equal("server"))
+		})
+
 		It("should not override other interfaces", func() {
-			networks := []vmschema.Network{
-				*vmschema.DefaultPodNetwork(),
-				{Name: "secondary", NetworkSource: vmschema.NetworkSource{Multus: &vmschema.MultusNetwork{NetworkName: "sec"}}},
-			}
 			ifaces := []vmschema.Interface{
-				{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}},
+				vhostIface("default"),
 				{Name: "secondary", InterfaceBindingMethod: vmschema.InterfaceBindingMethod{Bridge: &vmschema.InterfaceBridge{}}},
 			}
-
-			expectedDomainIface := &libvirtxml.DomainInterface{
-				Alias: utils.NewUserDefinedAlias("default"),
-				Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+			networks := []vmschema.Network{
+				draNetwork("default", "default", "vhost-port"),
+				{Name: "secondary", NetworkSource: vmschema.NetworkSource{Multus: &vmschema.MultusNetwork{NetworkName: "sec"}}},
 			}
+			vmi := buildVMI(ifaces, networks)
 
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
 			Expect(err).ToNot(HaveOccurred())
 
 			existingIface := libvirtxml.DomainInterface{Alias: utils.NewUserDefinedAlias("existing-iface")}
@@ -148,76 +255,80 @@ var _ = Describe("vhostuser network configurator", func() {
 
 			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{existingIface, *expectedDomainIface}))
+			Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{
+				existingIface,
+				{
+					Alias:  utils.NewUserDefinedAlias("default"),
+					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Source: vhostSource("/var/run/vhost/default.sock"),
+				},
+			}))
 		})
 
 		It("should set domain interface correctly when executed more than once", func() {
-			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
-			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			vmi := buildVMI(ifaces, networks)
 
-			expectedDomainIface := &libvirtxml.DomainInterface{
-				Alias: utils.NewUserDefinedAlias("default"),
-				Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
-			}
-
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
 			Expect(err).ToNot(HaveOccurred())
 
-			testDomain := &libvirtxml.Domain{}
-
-			mutatedDomain, err := testMutator.Mutate(testDomain)
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{*expectedDomainIface}))
 
 			mutatedAgain, err := testMutator.Mutate(mutatedDomain)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(mutatedAgain).To(Equal(mutatedDomain))
 		})
 
-		It("should handle multiple vhostuser interfaces correctly", func() {
-			networks := []vmschema.Network{
-				*vmschema.DefaultPodNetwork(),
-				{Name: "network1", NetworkSource: vmschema.NetworkSource{Multus: &vmschema.MultusNetwork{NetworkName: "net1"}}},
-				{Name: "network2", NetworkSource: vmschema.NetworkSource{Multus: &vmschema.MultusNetwork{NetworkName: "net2"}}},
-			}
+		It("should handle multiple vhostuser interfaces with distinct socket paths", func() {
 			ifaces := []vmschema.Interface{
-				{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}},
+				vhostIface("default"),
 				{Name: "net1", Binding: &vmschema.PluginBinding{Name: "vhostuser"}, MacAddress: "02:00:00:00:00:01"},
 				{Name: "net2", Binding: &vmschema.PluginBinding{Name: "vhostuser"}, MacAddress: "02:00:00:00:00:02", PciAddress: "0000:03:00.0"},
 			}
-
-			expectedDomainIfaces := []libvirtxml.DomainInterface{
-				{
-					Alias: utils.NewUserDefinedAlias("default"),
-					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
-				},
-				{
-					Alias: utils.NewUserDefinedAlias("net1"),
-					Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
-					MAC:   &libvirtxml.DomainInterfaceMAC{Address: "02:00:00:00:00:01"},
-				},
-				{
-					Alias:   utils.NewUserDefinedAlias("net2"),
-					Model:   &libvirtxml.DomainInterfaceModel{Type: "virtio"},
-					MAC:     &libvirtxml.DomainInterfaceMAC{Address: "02:00:00:00:00:02"},
-					Address: &libvirtxml.DomainAddress{PCI: pciAddr(0, 3, 0, 0)},
-				},
+			networks := []vmschema.Network{
+				draNetwork("default", "default", "vhost-port"),
+				draNetwork("net1", "net1", "vhost-port"),
+				draNetwork("net2", "net2", "vhost-port"),
 			}
+			vmi := buildVMI(ifaces, networks)
 
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi,
+				defaultDriver("default", "net1", "net2"),
+			)
 			Expect(err).ToNot(HaveOccurred())
 
 			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(3))
-			Expect(mutatedDomain.Devices.Interfaces).To(Equal(expectedDomainIfaces))
+			Expect(mutatedDomain.Devices.Interfaces).To(Equal([]libvirtxml.DomainInterface{
+				{
+					Alias:  utils.NewUserDefinedAlias("default"),
+					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Source: vhostSource("/var/run/vhost/default.sock"),
+				},
+				{
+					Alias:  utils.NewUserDefinedAlias("net1"),
+					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Source: vhostSource("/var/run/vhost/net1.sock"),
+					MAC:    &libvirtxml.DomainInterfaceMAC{Address: "02:00:00:00:00:01"},
+				},
+				{
+					Alias:   utils.NewUserDefinedAlias("net2"),
+					Model:   &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+					Source:  vhostSource("/var/run/vhost/net2.sock"),
+					MAC:     &libvirtxml.DomainInterfaceMAC{Address: "02:00:00:00:00:02"},
+					Address: &libvirtxml.DomainAddress{PCI: pciAddr(0, 3, 0, 0)},
+				},
+			}))
 		})
 
 		It("should replace existing interface with same name", func() {
-			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
-			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			vmi := buildVMI(ifaces, networks)
 
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
 			Expect(err).ToNot(HaveOccurred())
 
 			existingIface := libvirtxml.DomainInterface{
@@ -232,30 +343,32 @@ var _ = Describe("vhostuser network configurator", func() {
 				},
 			}
 
-			expectedDomainIface := &libvirtxml.DomainInterface{
-				Alias: utils.NewUserDefinedAlias("default"),
-				Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
-			}
-
 			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(1))
-			Expect(mutatedDomain.Devices.Interfaces[0]).To(Equal(*expectedDomainIface))
+			Expect(mutatedDomain.Devices.Interfaces[0]).To(Equal(libvirtxml.DomainInterface{
+				Alias:  utils.NewUserDefinedAlias("default"),
+				Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+				Source: vhostSource("/var/run/vhost/default.sock"),
+			}))
 		})
 
 		It("should handle mixed vhostuser and non-vhostuser interfaces", func() {
-			networks := []vmschema.Network{
-				*vmschema.DefaultPodNetwork(),
-				{Name: "multus1", NetworkSource: vmschema.NetworkSource{Multus: &vmschema.MultusNetwork{NetworkName: "net1"}}},
-				{Name: "multus2", NetworkSource: vmschema.NetworkSource{Multus: &vmschema.MultusNetwork{NetworkName: "net2"}}},
-			}
 			ifaces := []vmschema.Interface{
-				{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}},
+				vhostIface("default"),
 				{Name: "multus1", InterfaceBindingMethod: vmschema.InterfaceBindingMethod{Bridge: &vmschema.InterfaceBridge{}}},
-				{Name: "multus2", Binding: &vmschema.PluginBinding{Name: "vhostuser"}},
+				vhostIface("multus2"),
 			}
+			networks := []vmschema.Network{
+				draNetwork("default", "default", "vhost-port"),
+				{Name: "multus1", NetworkSource: vmschema.NetworkSource{Multus: &vmschema.MultusNetwork{NetworkName: "net1"}}},
+				draNetwork("multus2", "multus2", "vhost-port"),
+			}
+			vmi := buildVMI(ifaces, networks)
 
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi,
+				defaultDriver("default", "multus2"),
+			)
 			Expect(err).ToNot(HaveOccurred())
 
 			existingBridgeIface := libvirtxml.DomainInterface{
@@ -273,28 +386,20 @@ var _ = Describe("vhostuser network configurator", func() {
 			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(3))
-
-			// Bridge interface should remain untouched
 			Expect(mutatedDomain.Devices.Interfaces[0].Source.Bridge).ToNot(BeNil())
 			Expect(utils.AliasName(mutatedDomain.Devices.Interfaces[0].Alias)).To(Equal("multus1"))
-
-			// Vhostuser interfaces should be added (no Source set yet)
-			vhostuserIfaces := 0
-			for _, iface := range mutatedDomain.Devices.Interfaces {
-				if iface.Source == nil || iface.Source.VHostUser == nil {
-					if iface.Model != nil && iface.Model.Type == "virtio" {
-						vhostuserIfaces++
-					}
-				}
+			for _, iface := range mutatedDomain.Devices.Interfaces[1:] {
+				Expect(iface.Source.VHostUser).ToNot(BeNil())
+				Expect(iface.Source.VHostUser.Chardev.UNIX.Mode).To(Equal("server"))
 			}
-			Expect(vhostuserIfaces).To(Equal(2))
 		})
 
 		It("should set memory backing to shared", func() {
-			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
-			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			vmi := buildVMI(ifaces, networks)
 
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
 			Expect(err).ToNot(HaveOccurred())
 
 			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
@@ -305,10 +410,11 @@ var _ = Describe("vhostuser network configurator", func() {
 		})
 
 		It("should set memory backing to shared even if it exists with a different mode", func() {
-			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
-			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			vmi := buildVMI(ifaces, networks)
 
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
 			Expect(err).ToNot(HaveOccurred())
 
 			testDomain := &libvirtxml.Domain{
@@ -319,16 +425,15 @@ var _ = Describe("vhostuser network configurator", func() {
 
 			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomain.MemoryBacking).ToNot(BeNil())
-			Expect(mutatedDomain.MemoryBacking.MemoryAccess).ToNot(BeNil())
 			Expect(mutatedDomain.MemoryBacking.MemoryAccess.Mode).To(Equal("shared"))
 		})
 
 		It("should set memory backing access when backing exists but access is nil", func() {
-			ifaces := []vmschema.Interface{{Name: "default", Binding: &vmschema.PluginBinding{Name: "vhostuser"}}}
-			networks := []vmschema.Network{*vmschema.DefaultPodNetwork()}
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			vmi := buildVMI(ifaces, networks)
 
-			testMutator, err := domain.NewVhostUserNetworkConfigurator(ifaces, networks)
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
 			Expect(err).ToNot(HaveOccurred())
 
 			testDomain := &libvirtxml.Domain{
@@ -337,7 +442,6 @@ var _ = Describe("vhostuser network configurator", func() {
 
 			mutatedDomain, err := testMutator.Mutate(testDomain)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(mutatedDomain.MemoryBacking).ToNot(BeNil())
 			Expect(mutatedDomain.MemoryBacking.MemoryAccess).ToNot(BeNil())
 			Expect(mutatedDomain.MemoryBacking.MemoryAccess.Mode).To(Equal("shared"))
 		})

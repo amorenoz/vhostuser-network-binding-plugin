@@ -9,9 +9,9 @@ require (
 	k8s.io/api v0.36.1
 	k8s.io/dynamic-resource-allocation v0.36.1
 	k8s.io/klog/v2 v2.140.0
-	kubevirt.io/api v1.8.2
-	kubevirt.io/client-go v1.8.2
-	kubevirt.io/kubevirt v1.8.2
+	kubevirt.io/api v1.9.0-beta.0.0.20260608175919-2d80cea6b069
+	kubevirt.io/client-go v1.9.0-beta.0.0.20260608175921-88352ed030c2
+	kubevirt.io/kubevirt v1.9.0-beta.0.0.20260608173016-22f8e03db1be
 	libvirt.org/go/libvirtxml v1.12002.0
 )
 
