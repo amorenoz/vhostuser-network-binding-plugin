@@ -42,8 +42,9 @@ type VhostUserInterface struct {
 }
 
 type VhostUserNetworkConfigurator struct {
-	interfaces []*VhostUserInterface
-	queues     uint
+	interfaces            []*VhostUserInterface
+	queues                uint
+	useVirtioTransitional bool
 }
 
 type ClaimInfo struct {
@@ -67,10 +68,12 @@ func NewVhostUserNetworkConfigurator(
 	}
 
 	queues := computeQueues(vmi)
+	useVirtioTransitional := vmi.Spec.Domain.Devices.UseVirtioTransitional != nil && *vmi.Spec.Domain.Devices.UseVirtioTransitional
 
 	return &VhostUserNetworkConfigurator{
-		interfaces: vhostIfaces,
-		queues:     queues,
+		interfaces:            vhostIfaces,
+		queues:                queues,
+		useVirtioTransitional: useVirtioTransitional,
 	}, nil
 }
 
@@ -100,6 +103,14 @@ func computeQueues(vmi *vmschema.VirtualMachineInstance) uint {
 		threads = 1
 	}
 	return uint(cores * sockets * threads)
+}
+
+// modelType returns the virtio model type string to use for the interface.
+func (p VhostUserNetworkConfigurator) modelType() string {
+	if p.useVirtioTransitional {
+		return "virtio-transitional"
+	}
+	return "virtio"
 }
 
 func (p VhostUserNetworkConfigurator) Mutate(domain *libvirtxml.Domain) (*libvirtxml.Domain, error) {
@@ -132,7 +143,7 @@ func (p VhostUserNetworkConfigurator) generateDomainInterface(vhostIface *VhostU
 
 	domIface := &libvirtxml.DomainInterface{
 		Alias: utils.NewUserDefinedAlias(vhostIface.VmiSpecIface.Name),
-		Model: &libvirtxml.DomainInterfaceModel{Type: "virtio"},
+		Model: &libvirtxml.DomainInterfaceModel{Type: p.modelType()},
 		Source: &libvirtxml.DomainInterfaceSource{
 			VHostUser: &libvirtxml.DomainInterfaceSourceVHostUser{
 				Chardev: &libvirtxml.DomainChardevSource{

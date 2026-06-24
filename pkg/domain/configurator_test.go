@@ -580,5 +580,64 @@ var _ = Describe("vhostuser network configurator", func() {
 				Expect(iface.Driver.Queues).To(Equal(uint(4)))
 			}
 		})
+
+		It("should use virtio model when UseVirtioTransitional is false", func() {
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			uvt := false
+			vmi := buildVMI(ifaces, networks)
+			vmi.Spec.Domain.Devices.UseVirtioTransitional = &uvt
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces[0].Model).ToNot(BeNil())
+			Expect(mutatedDomain.Devices.Interfaces[0].Model.Type).To(Equal("virtio"))
+		})
+
+		It("should use virtio-transitional model when UseVirtioTransitional is true", func() {
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			uvt := true
+			vmi := buildVMI(ifaces, networks)
+			vmi.Spec.Domain.Devices.UseVirtioTransitional = &uvt
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces[0].Model).ToNot(BeNil())
+			Expect(mutatedDomain.Devices.Interfaces[0].Model.Type).To(Equal("virtio-transitional"))
+		})
+
+		It("should apply virtio-transitional to all vhost-user interfaces", func() {
+			ifaces := []vmschema.Interface{
+				vhostIface("default"),
+				vhostIface("secondary"),
+			}
+			networks := []vmschema.Network{
+				draNetwork("default", "default", "vhost-port"),
+				draNetwork("secondary", "secondary", "vhost-port"),
+			}
+			uvt := true
+			vmi := buildVMI(ifaces, networks)
+			vmi.Spec.Domain.Devices.UseVirtioTransitional = &uvt
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi,
+				defaultDriver("default", "secondary"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(2))
+			for _, iface := range mutatedDomain.Devices.Interfaces {
+				Expect(iface.Model).ToNot(BeNil())
+				Expect(iface.Model.Type).To(Equal("virtio-transitional"))
+			}
+		})
 	})
 })
