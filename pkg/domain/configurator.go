@@ -41,6 +41,7 @@ type VhostUserInterface struct {
 
 type VhostUserNetworkConfigurator struct {
 	interfaces []*VhostUserInterface
+	queues     uint
 }
 
 type ClaimInfo struct {
@@ -63,9 +64,40 @@ func NewVhostUserNetworkConfigurator(
 		return nil, fmt.Errorf("no vhost interfaces found")
 	}
 
+	queues := computeQueues(vmi)
+
 	return &VhostUserNetworkConfigurator{
 		interfaces: vhostIfaces,
+		queues:     queues,
 	}, nil
+}
+
+// computeQueues returns the number of virtio queues to configure for vhost-user
+// interfaces.
+func computeQueues(vmi *vmschema.VirtualMachineInstance) uint {
+	mq := vmi.Spec.Domain.Devices.NetworkInterfaceMultiQueue
+	if mq == nil || !*mq {
+		return 1
+	}
+	cpuSpec := vmi.Spec.Domain.CPU
+	if cpuSpec == nil {
+		return 1
+	}
+
+	cores := cpuSpec.Cores
+	sockets := cpuSpec.Sockets
+	threads := cpuSpec.Threads
+
+	if cores == 0 {
+		cores = 1
+	}
+	if sockets == 0 {
+		sockets = 1
+	}
+	if threads == 0 {
+		threads = 1
+	}
+	return uint(cores * sockets * threads)
 }
 
 func (p VhostUserNetworkConfigurator) Mutate(domain *libvirtxml.Domain) (*libvirtxml.Domain, error) {
@@ -108,6 +140,9 @@ func (p VhostUserNetworkConfigurator) generateDomainInterface(vhostIface *VhostU
 					},
 				},
 			},
+		},
+		Driver: &libvirtxml.DomainInterfaceDriver{
+			Queues: p.queues,
 		},
 	}
 

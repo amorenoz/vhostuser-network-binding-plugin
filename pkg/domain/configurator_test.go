@@ -106,6 +106,14 @@ func vhostSource(path string) *libvirtxml.DomainInterfaceSource {
 	}
 }
 
+// ifaceDriver returns the expected DomainInterfaceDriver for a vhost-user interface
+// with the given number of queues.
+func ifaceDriver(queues uint) *libvirtxml.DomainInterfaceDriver {
+	return &libvirtxml.DomainInterfaceDriver{
+		Queues: queues,
+	}
+}
+
 // pciAddr is a helper to build a DomainAddressPCI from four uint values.
 func pciAddr(dom, bus, slot, fn uint) *libvirtxml.DomainAddressPCI {
 	return &libvirtxml.DomainAddressPCI{
@@ -188,6 +196,7 @@ var _ = Describe("vhostuser network configurator", func() {
 					Alias:  utils.NewUserDefinedAlias("default"),
 					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 					Source: vhostSource("/var/run/vhost/default.sock"),
+					Driver: ifaceDriver(1),
 				},
 			),
 			Entry("PCI address",
@@ -197,6 +206,7 @@ var _ = Describe("vhostuser network configurator", func() {
 					Model:   &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 					Source:  vhostSource("/var/run/vhost/default.sock"),
 					Address: &libvirtxml.DomainAddress{PCI: pciAddr(0, 2, 2, 0)},
+					Driver:  ifaceDriver(1),
 				},
 			),
 			Entry("MAC address",
@@ -206,6 +216,7 @@ var _ = Describe("vhostuser network configurator", func() {
 					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 					Source: vhostSource("/var/run/vhost/default.sock"),
 					MAC:    &libvirtxml.DomainInterfaceMAC{Address: "02:02:02:02:02:02"},
+					Driver: ifaceDriver(1),
 				},
 			),
 			Entry("ACPI address",
@@ -215,6 +226,7 @@ var _ = Describe("vhostuser network configurator", func() {
 					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 					Source: vhostSource("/var/run/vhost/default.sock"),
 					ACPI:   &libvirtxml.DomainDeviceACPI{Index: uint(2)},
+					Driver: ifaceDriver(1),
 				},
 			),
 		)
@@ -261,6 +273,7 @@ var _ = Describe("vhostuser network configurator", func() {
 					Alias:  utils.NewUserDefinedAlias("default"),
 					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 					Source: vhostSource("/var/run/vhost/default.sock"),
+					Driver: ifaceDriver(1),
 				},
 			}))
 		})
@@ -306,12 +319,14 @@ var _ = Describe("vhostuser network configurator", func() {
 					Alias:  utils.NewUserDefinedAlias("default"),
 					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 					Source: vhostSource("/var/run/vhost/default.sock"),
+					Driver: ifaceDriver(1),
 				},
 				{
 					Alias:  utils.NewUserDefinedAlias("net1"),
 					Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 					Source: vhostSource("/var/run/vhost/net1.sock"),
 					MAC:    &libvirtxml.DomainInterfaceMAC{Address: "02:00:00:00:00:01"},
+					Driver: ifaceDriver(1),
 				},
 				{
 					Alias:   utils.NewUserDefinedAlias("net2"),
@@ -319,6 +334,7 @@ var _ = Describe("vhostuser network configurator", func() {
 					Source:  vhostSource("/var/run/vhost/net2.sock"),
 					MAC:     &libvirtxml.DomainInterfaceMAC{Address: "02:00:00:00:00:02"},
 					Address: &libvirtxml.DomainAddress{PCI: pciAddr(0, 3, 0, 0)},
+					Driver:  ifaceDriver(1),
 				},
 			}))
 		})
@@ -350,6 +366,7 @@ var _ = Describe("vhostuser network configurator", func() {
 				Alias:  utils.NewUserDefinedAlias("default"),
 				Model:  &libvirtxml.DomainInterfaceModel{Type: "virtio"},
 				Source: vhostSource("/var/run/vhost/default.sock"),
+				Driver: ifaceDriver(1),
 			}))
 		})
 
@@ -444,6 +461,120 @@ var _ = Describe("vhostuser network configurator", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(mutatedDomain.MemoryBacking.MemoryAccess).ToNot(BeNil())
 			Expect(mutatedDomain.MemoryBacking.MemoryAccess.Mode).To(Equal("shared"))
+		})
+
+		It("should set queues to 1 when multiqueue is disabled", func() {
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			mqDisabled := false
+			vmi := buildVMI(ifaces, networks)
+			vmi.Spec.Domain.Devices.NetworkInterfaceMultiQueue = &mqDisabled
+			vmi.Spec.Domain.CPU = &vmschema.CPU{Cores: 4, Sockets: 1, Threads: 1}
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(1))
+			Expect(mutatedDomain.Devices.Interfaces[0].Driver).ToNot(BeNil())
+			Expect(mutatedDomain.Devices.Interfaces[0].Driver.Queues).To(Equal(uint(1)))
+		})
+
+		It("should set queues to number of vCPUs when multiqueue is enabled", func() {
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			mqEnabled := true
+			vmi := buildVMI(ifaces, networks)
+			vmi.Spec.Domain.Devices.NetworkInterfaceMultiQueue = &mqEnabled
+			vmi.Spec.Domain.CPU = &vmschema.CPU{Cores: 2, Sockets: 2, Threads: 2}
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(1))
+			Expect(mutatedDomain.Devices.Interfaces[0].Driver).ToNot(BeNil())
+			// 2 cores * 2 sockets * 2 threads = 8
+			Expect(mutatedDomain.Devices.Interfaces[0].Driver.Queues).To(Equal(uint(8)))
+		})
+
+		It("should set queues to 1 when multiqueue is enabled but CPU spec is nil", func() {
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			mqEnabled := true
+			vmi := buildVMI(ifaces, networks)
+			vmi.Spec.Domain.Devices.NetworkInterfaceMultiQueue = &mqEnabled
+			// CPU spec intentionally left nil
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(1))
+			Expect(mutatedDomain.Devices.Interfaces[0].Driver).ToNot(BeNil())
+			Expect(mutatedDomain.Devices.Interfaces[0].Driver.Queues).To(Equal(uint(1)))
+		})
+
+		It("should default zero CPU fields to 1 when computing queues", func() {
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			mqEnabled := true
+			vmi := buildVMI(ifaces, networks)
+			vmi.Spec.Domain.Devices.NetworkInterfaceMultiQueue = &mqEnabled
+			vmi.Spec.Domain.CPU = &vmschema.CPU{Cores: 4}
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces[0].Driver.Queues).To(Equal(uint(4)))
+		})
+
+		It("should set TX and RX queue sizes to 1024", func() {
+			ifaces := []vmschema.Interface{vhostIface("default")}
+			networks := []vmschema.Network{draNetwork("default", "default", "vhost-port")}
+			vmi := buildVMI(ifaces, networks)
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi, defaultDriver("default"))
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(1))
+			drv := mutatedDomain.Devices.Interfaces[0].Driver
+			Expect(drv).ToNot(BeNil())
+		})
+
+		It("should apply multiqueue to all interfaces", func() {
+			ifaces := []vmschema.Interface{
+				vhostIface("default"),
+				vhostIface("secondary"),
+			}
+			networks := []vmschema.Network{
+				draNetwork("default", "default", "vhost-port"),
+				draNetwork("secondary", "secondary", "vhost-port"),
+			}
+			mqEnabled := true
+			vmi := buildVMI(ifaces, networks)
+			vmi.Spec.Domain.Devices.NetworkInterfaceMultiQueue = &mqEnabled
+			vmi.Spec.Domain.CPU = &vmschema.CPU{Cores: 4, Sockets: 1, Threads: 1}
+
+			testMutator, err := domain.NewVhostUserNetworkConfigurator(vmi,
+				defaultDriver("default", "secondary"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			mutatedDomain, err := testMutator.Mutate(&libvirtxml.Domain{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(2))
+			for _, iface := range mutatedDomain.Devices.Interfaces {
+				Expect(iface.Driver).ToNot(BeNil())
+				Expect(iface.Driver.Queues).To(Equal(uint(4)))
+			}
 		})
 	})
 })
