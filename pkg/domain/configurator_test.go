@@ -110,7 +110,9 @@ func vhostSource(path string) *libvirtxml.DomainInterfaceSource {
 // with the given number of queues.
 func ifaceDriver(queues uint) *libvirtxml.DomainInterfaceDriver {
 	return &libvirtxml.DomainInterfaceDriver{
-		Queues: queues,
+		TXQueueSize: domain.QueueSize,
+		RXQueueSize: domain.QueueSize,
+		Queues:      queues,
 	}
 }
 
@@ -547,6 +549,8 @@ var _ = Describe("vhostuser network configurator", func() {
 			Expect(mutatedDomain.Devices.Interfaces).To(HaveLen(1))
 			drv := mutatedDomain.Devices.Interfaces[0].Driver
 			Expect(drv).ToNot(BeNil())
+			Expect(drv.TXQueueSize).To(Equal(domain.QueueSize))
+			Expect(drv.RXQueueSize).To(Equal(domain.QueueSize))
 		})
 
 		It("should apply multiqueue to all interfaces", func() {

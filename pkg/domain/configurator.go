@@ -32,6 +32,8 @@ import (
 const (
 	// VhostUserPluginName vhost-user binding plugin name should be registered to Kubevirt through Kubevirt CR
 	VhostUserPluginName = "vhostuser"
+	// QueueSize is the size of the virtio TX and RX queues
+	QueueSize uint = 1024
 )
 
 type VhostUserInterface struct {
@@ -142,7 +144,9 @@ func (p VhostUserNetworkConfigurator) generateDomainInterface(vhostIface *VhostU
 			},
 		},
 		Driver: &libvirtxml.DomainInterfaceDriver{
-			Queues: p.queues,
+			TXQueueSize: QueueSize,
+			RXQueueSize: QueueSize,
+			Queues:      p.queues,
 		},
 	}
 
