@@ -1,11 +1,14 @@
 PLUGIN_NAME := vhostuser-network-binding-plugin
-BIN_DIR ?= bin
-BIN     ?= $(BIN_DIR)/$(PLUGIN_NAME)
+BIN_DIR ?= $(CURDIR)/bin
+BUILD_DIR ?= $(CURDIR)/build
+
+OUT ?= $(BUILD_DIR)/$(PLUGIN_NAME)
 
 GO      ?= go
-LINT    := golangci-lint
+LINT    := $(BIN_DIR)/golangci-lint
 
 GOLANG_VERSION  ?= 1.26
+GOLANGCI_LINT_VERSION ?= v2.7.2
 
 CONTAINER_TOOL 	?= podman
 REGISTRY       	?= quay.io/amorenoz
@@ -17,13 +20,16 @@ IMAGE_TAG      	?= $(shell git describe --tags --always --dirty 2>/dev/null || e
 all: build
 
 build:
-	$(GO) build -o $(BIN) ./cmd/...
+	$(GO) build -o $(OUT) ./cmd/...
 
 test:
 	$(GO) test ./pkg/...
 
-lint:
+lint: $(LINT)
 	$(LINT) run ./...
+
+$(LINT):
+	GOBIN=$(BIN_DIR) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 clean:
 	rm -rf $(BIN_DIR)
